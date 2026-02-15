@@ -7,12 +7,23 @@ name = "ble-ctf-tools-pyenv"
 version = "1.0"
 description = "Development environment for BLE CTF helper tools"
 authors = ["Ryan Holeman <ryan@hackgnar.com>"]
-package-mode = false 
+packages = [
+  { include = "poetryenv", from = ".." }
+]
 
 [tool.poetry.dependencies]
-python = ">=3.8"
+# Restrict python to <4 so dependencies that don't support Python 4 can be resolved
+python = ">=3.8,<4"
 bleah = { git = "https://github.com/hackgnar/bleah.git" }
 bluepy = "*"
-scapy = "*"
+# Pin scapy to a stable 2.x release for compatibility with scapy API
+scapy = {version = "^2.4.5", extras = ["bluetooth"]}
 ipython = "*"
 platformio = "*"
+rich = "*"
+dbus-next = "*"
+prompt_toolkit = "^3.0"
+
+[tool.poetry.scripts]
+gatt-enum = "tools.poetryenv.gatt_enum:main"
+gatt-cli = "tools.poetryenv.gatt_cli:main"

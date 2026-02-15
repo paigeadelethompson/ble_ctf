@@ -3,55 +3,162 @@ name: CI / Release
 on:
   push:
     tags: ['v*', 'release-*']
-    branches: ['main', 'master']
+    branches: ['main', 'master', 'update']
   workflow_dispatch: {}
 
 jobs:
-  vagrant-package:
-    name: Vagrant package and release
+  image-build:
+    name: Build Vagrant .box and release
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install prerequisites (VirtualBox + Vagrant)
+      - name: Install prerequisites (curl, gpg)
         run: |
           sudo apt-get update
-          sudo apt-get install -y virtualbox virtualbox-ext-pack
-          sudo apt-get install -y vagrant
+          sudo apt-get install -y --no-install-recommends wget gnupg2 ca-certificates lsb-release software-properties-common || true
 
-      - name: Start Vagrant and package box
+      # Packer removed — image is built via debootstrap/qemu steps below
+
+      - name: Attempt to install VirtualBox (may fail on hosted runners)
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          vagrant up --provider=virtualbox || true
-          vagrant package --output ble_ctf.box
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends virtualbox || true
 
-      - name: Create GitHub Release for Vagrant box
-        id: release_vagrant
+      - name: Build disk image (debootstrap -> qcow2 -> vdi)
+        id: build_disk_image
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euxo pipefail
+
+          IMG=ble_ctf.qcow2
+          SIZE=10G
+          MNT=./mnt
+          VDI=ble_ctf.vdi
+          BOXNAME=ble_ctf-$(date +%s).box
+          VMNAME=ble_ctf_tmp_vm
+
+          sudo apt-get update
+          # Install QEMU tools (qemu-img, qemu-nbd), debootstrap and helpers; fail if unavailable
+          sudo apt-get install -y --no-install-recommends debootstrap kpartx qemu-utils qemu-kvm qemu-system-x86 qemu-user-static e2fsprogs wget curl jq rsync
+          # verify qemu tools present
+          if ! command -v qemu-img >/dev/null 2>&1; then echo "qemu-img not found after install" >&2; exit 1; fi
+          if ! command -v qemu-nbd >/dev/null 2>&1; then echo "qemu-nbd not found after install" >&2; exit 1; fi
+          # Attempt to install VirtualBox and DKMS (may require kernel headers)
+          sudo apt-get install -y --no-install-recommends virtualbox virtualbox-dkms || true
+          sudo apt-get install -y --no-install-recommends linux-headers-$(uname -r) || true
+          # try to load vboxdrv
+          sudo modprobe vboxdrv || true
+
+          # create qcow2 image and expose via nbd
+          qemu-img create -f qcow2 ${IMG} ${SIZE}
+          sudo modprobe nbd max_part=8 || true
+          sudo qemu-nbd --connect=/dev/nbd0 ${IMG}
+
+          NBDEV=/dev/nbd0
+          # Create GPT with an EFI system partition + root partition
+          sudo parted -s ${NBDEV} mklabel gpt mkpart primary fat32 1MiB 513MiB mkpart primary ext4 513MiB 100%
+          sudo parted -s ${NBDEV} set 1 esp on || true
+          sudo partprobe ${NBDEV} || true
+          sleep 1
+
+          sudo kpartx -av ${NBDEV}
+          ESP=$(ls /dev/mapper | grep $(basename ${NBDEV})p1 || true)
+          if [ -z "$ESP" ]; then ESP=$(ls /dev/mapper | grep $(basename ${NBDEV})1 || true); fi
+          ROOT=$(ls /dev/mapper | grep $(basename ${NBDEV})p2 || true)
+          if [ -z "$ROOT" ]; then ROOT=$(ls /dev/mapper | grep $(basename ${NBDEV})2 || true); fi
+          ESP=/dev/mapper/${ESP}
+          ROOT=/dev/mapper/${ROOT}
+
+          sudo mkfs.vfat -F32 ${ESP}
+          sudo mkfs.ext4 -F ${ROOT}
+          mkdir -p ${MNT}
+          sudo mount ${ROOT} ${MNT}
+          sudo mkdir -p ${MNT}/boot/efi
+          sudo mount ${ESP} ${MNT}/boot/efi
+
+          sudo debootstrap --arch=amd64 jammy ${MNT} http://archive.ubuntu.com/ubuntu/
+
+          # Copy only git-tracked files into chroot at /vagrant (avoid cloning or copying build artifacts)
+          sudo mkdir -p ${MNT}/vagrant
+          sudo bash -lc "git -C . archive --format=tar HEAD | tar -x -C ${MNT}/vagrant"
+
+          # Bind essential pseudo-filesystems so apt, dpkg and initramfs/grub tools work
+          for d in /proc /sys /dev /dev/pts /run; do sudo mount --bind $d ${MNT}$d; done
+
+          # Provision the chroot by copying an explicit script into the chroot and running it.
+          sudo install -m 0755 -D .github/workflows/chroot_provision.sh ${MNT}/tmp/provision.sh
+          sudo chroot ${MNT} /bin/bash /tmp/provision.sh || true
+          sudo rm -f ${MNT}/tmp/provision.sh || true
+
+          for d in /run /dev/pts /dev /sys /proc; do sudo umount -l ${MNT}$d || true; done
+          sudo umount -l ${MNT} || true
+          sudo kpartx -dv ${NBDEV} || true
+          sudo qemu-nbd --disconnect ${NBDEV} || true
+
+          # convert qcow2 -> vdi
+          qemu-img convert -f qcow2 -O vdi ${IMG} ${VDI}
+
+          if command -v VBoxManage >/dev/null 2>&1; then
+            VBoxManage createvm --name ${VMNAME} --register || true
+            VBoxManage modifyvm ${VMNAME} --memory 2048 --cpus 2 --ostype Ubuntu_64 || true
+            VBoxManage storagectl ${VMNAME} --name "SATA Controller" --add sata --controller IntelAhci || true
+            VBoxManage storageattach ${VMNAME} --storagectl "SATA Controller" --port 0 --device 0 --type hdd --medium ${VDI} || true
+            VBoxManage modifyvm ${VMNAME} --nic1 nat || true
+            VBoxManage modifyvm ${VMNAME} --natpf1 "ssh,tcp,,2222,,22" || true
+            VBoxManage export ${VMNAME} --output ${VMNAME}.ovf || true
+            echo '{"provider":"virtualbox"}' > metadata.json
+            tar -cvf ${BOXNAME} ${VMNAME}.ovf *.vdi metadata.json || true
+            VBoxManage unregistervm ${VMNAME} --delete || true
+            # Try to compress the produced box with 7zip (maximum LZMA2) to fit GitHub's 2 GiB upload limit
+            if ! command -v 7z >/dev/null 2>&1; then
+              sudo apt-get update || true
+              sudo apt-get install -y p7zip-full || true
+            fi
+            if command -v 7z >/dev/null 2>&1; then
+              7z a -t7z -m0=lzma2 -mx=9 "${BOXNAME}.7z" "${BOXNAME}" || true
+            fi
+            if [ -f "${BOXNAME}.7z" ]; then
+              echo "box=${BOXNAME}.7z" >> $GITHUB_OUTPUT
+            else
+              echo "box=${BOXNAME}" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "VDI produced: ${VDI}" >&2
+            echo "box=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release for image
+        id: release_image
         uses: actions/create-release@v1
         with:
-          tag_name: vagrant-box-${{ github.sha }}
-          release_name: Vagrant box ${{ github.sha }}
-          body: Auto-packaged Vagrant box for commit ${{ github.sha }}
-          draft: false
+          tag_name: image-${{ github.sha }}
+          release_name: Image ${{ github.sha }}
+          body: Disk image/box for ${{ github.sha }}
+          draft: true
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload Vagrant box to release
+      - name: Upload produced box if present
+        if: steps.build_disk_image.outputs.box != ''
         uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.release_vagrant.outputs.upload_url }}
-          asset_path: ./ble_ctf.box
-          asset_name: ble_ctf.box
+          upload_url: ${{ steps.release_image.outputs.upload_url }}
+          asset_path: ${{ steps.build_disk_image.outputs.box }}
+          asset_name: ${{ steps.build_disk_image.outputs.box }}
           asset_content_type: application/octet-stream
 
   docker-build-push:
     name: Docker build and optional push
     runs-on: ubuntu-latest
     needs: []
-    env:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -61,25 +168,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      - name: Log in to DockerHub (if configured)
-        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
-        uses: docker/login-action@v2
-        with:
-          username: ${{ env.DOCKERHUB_USERNAME }}
-          password: ${{ env.DOCKERHUB_TOKEN }}
-
-      - name: Build and push to DockerHub (when credentials present)
-        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.DOCKERHUB_USERNAME }}/ble_ctf:${{ github.sha }}
-            ${{ env.DOCKERHUB_USERNAME }}/ble_ctf:latest
-
-      - name: Build only and tag to GHCR (no DockerHub credentials)
-        if: ${{ env.DOCKERHUB_USERNAME == '' || env.DOCKERHUB_TOKEN == '' }}
+      - name: Build only and tag to GHCR
         uses: docker/build-push-action@v4
         with:
           context: .
@@ -132,13 +221,15 @@ jobs:
           tag_name: firmware-${{ github.sha }}
           release_name: Firmware ${{ github.sha }}
           body: PlatformIO-built firmware for ${{ github.sha }}
-          draft: false
+          draft: true
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload firmware archive to release
         uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.release_fw.outputs.upload_url }}
           asset_path: ./firmware-${{ github.sha }}.zip

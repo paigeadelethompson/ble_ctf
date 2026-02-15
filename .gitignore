@@ -9,3 +9,4 @@ sdkconfig.old
 *CMakeLists.txt
 sdkconfig.esp32dev
 .pio
+*.pyc
