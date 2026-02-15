@@ -1,0 +1,146 @@
+name: CI / Release
+
+on:
+  push:
+    tags: ['v*', 'release-*']
+    branches: ['main', 'master']
+  workflow_dispatch: {}
+
+jobs:
+  vagrant-package:
+    name: Vagrant package and release
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install prerequisites (VirtualBox + Vagrant)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y virtualbox virtualbox-ext-pack
+          sudo apt-get install -y vagrant
+
+      - name: Start Vagrant and package box
+        run: |
+          vagrant up --provider=virtualbox || true
+          vagrant package --output ble_ctf.box
+
+      - name: Create GitHub Release for Vagrant box
+        id: release_vagrant
+        uses: actions/create-release@v1
+        with:
+          tag_name: vagrant-box-${{ github.sha }}
+          release_name: Vagrant box ${{ github.sha }}
+          body: Auto-packaged Vagrant box for commit ${{ github.sha }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Vagrant box to release
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.release_vagrant.outputs.upload_url }}
+          asset_path: ./ble_ctf.box
+          asset_name: ble_ctf.box
+          asset_content_type: application/octet-stream
+
+  docker-build-push:
+    name: Docker build and optional push
+    runs-on: ubuntu-latest
+    needs: []
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to DockerHub (if configured)
+        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v2
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      - name: Build and push to DockerHub (when credentials present)
+        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_USERNAME }}/ble_ctf:${{ github.sha }}
+            ${{ env.DOCKERHUB_USERNAME }}/ble_ctf:latest
+
+      - name: Build only and tag to GHCR (no DockerHub credentials)
+        if: ${{ env.DOCKERHUB_USERNAME == '' || env.DOCKERHUB_TOKEN == '' }}
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: false
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/ble_ctf:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/ble_ctf:latest
+
+  firmware-build-release:
+    name: Build firmware and create release
+    runs-on: ubuntu-latest
+    needs: []
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Cache PlatformIO packages and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio
+          key: ${{ runner.os }}-platformio-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-platformio-
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Build firmware (PlatformIO)
+        run: |
+          platformio run
+
+      - name: Archive firmware artifacts
+        run: |
+          mkdir -p release_artifacts
+          cp -r .pio/build release_artifacts/ || true
+          zip -r firmware-${{ github.sha }}.zip release_artifacts || true
+
+      - name: Create GitHub Release for firmware
+        id: release_fw
+        uses: actions/create-release@v1
+        with:
+          tag_name: firmware-${{ github.sha }}
+          release_name: Firmware ${{ github.sha }}
+          body: PlatformIO-built firmware for ${{ github.sha }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload firmware archive to release
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.release_fw.outputs.upload_url }}
+          asset_path: ./firmware-${{ github.sha }}.zip
+          asset_name: firmware-${{ github.sha }}.zip
+          asset_content_type: application/zip

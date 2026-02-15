@@ -1,0 +1,137 @@
+
+- name: Provision BLE development box for Vagrant
+  hosts: all
+  become: true
+  vars:
+    src_dir: /home/vagrant/src
+    # libbtbb_PACKAGE_VERSION uses current date: YYYY.MM.D (day without leading zero)
+    libbtbb_package_version: "{{ ansible_date_time.year }}.{{ ansible_date_time.month }}.{{ ansible_date_time.day | int }}"
+    ubertooth_package_version: "{{ ansible_date_time.year }}.{{ ansible_date_time.month }}.{{ ansible_date_time.day | int }}"
+    git_repos:
+      - name: libbtbb
+        repo: https://github.com/greatscottgadgets/libbtbb.git
+      - name: ubertooth
+        repo: https://github.com/greatscottgadgets/ubertooth.git
+      - name: Adafruit_BLESniffer_Python
+        repo: https://github.com/adafruit/Adafruit_BLESniffer_Python.git
+      # nordic_ble removed: Wireshark now natively dissects Nordic BLE
+
+  tasks:
+    - name: Ensure APT cache is up to date and install packages
+      apt:
+        name:
+          - git
+          - python-is-python3
+          - python3-pip
+          - python3-poetry
+          - libbluetooth-dev
+          - build-essential
+          - libglib2.0-dev
+          - bluez
+          - bluez-tools
+          - cmake
+          - libusb-1.0-0-dev
+          - make
+          - clang
+          - pkg-config
+          - libpcap-dev
+          - tshark
+          - wireshark-dev
+        state: present
+        update_cache: yes
+
+    - name: Create source directory
+      file:
+        path: "/usr/src"
+        state: directory
+        owner: vagrant
+        group: vagrant
+        mode: '0755'
+
+    - name: Clone repositories
+      git:
+        repo: "{{ item.repo }}"
+        dest: "/usr/src/{{ item.name }}"
+        update: yes
+      loop: "{{ git_repos }}"
+
+    - name: Build and install libbtbb
+      block:
+        - name: Run cmake for libbtbb
+          command: >-
+            cmake -DINSTALL_DIR=/usr/local -DPACKAGE_VERSION={{ libbtbb_package_version }}
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -B build/ -S .
+          args:
+            chdir: "/usr/src/libbtbb"
+
+        - name: Make libbtbb
+          command: cmake --build build/ -- -j "{{ ansible_facts.processor_cores | default(1) }}"
+          args:
+            chdir: "/usr/src/libbtbb"
+
+        - name: Install libbtbb
+          command: cmake --install build/
+          args:
+            chdir: "/usr/src/libbtbb"
+
+        - name: Run ldconfig after libbtbb
+          command: ldconfig
+
+      when: "ansible_facts['distribution'] is defined"
+
+    - name: Build and install ubertooth host
+      block:
+        - name: Ensure ubertooth host build dir exists
+          file:
+            path: "/usr/src/ubertooth/host/build"
+            state: directory
+
+        - name: Run cmake for ubertooth host
+          command: cmake -DINSTALL_DIR=/usr/local -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DPACKAGE_VERSION={{ ubertooth_package_version }} -B build/ -S .
+          args:
+            chdir: "/usr/src/ubertooth/host"
+
+        - name: Make ubertooth host
+          command: cmake --build build/ -- -j "{{ ansible_facts.processor_cores | default(1) }}"
+          args:
+            chdir: "/usr/src/ubertooth/host"
+
+        - name: Install ubertooth host
+          command: cmake --install build/
+          args:
+            chdir: "/usr/src/ubertooth/host"
+
+        - name: Run ldconfig after ubertooth
+          command: ldconfig
+
+      when: "ansible_facts['distribution'] is defined"
+
+    # nordic_ble build removed: Wireshark provides native Nordic dissectors
+      
+    - name: Upgrade pip, setuptools, packaging and virtualenv
+      pip:
+        name:
+          - pip
+          - setuptools
+          - wheel
+          - packaging
+          - virtualenv
+          - poetry
+        state: latest
+        executable: pip3
+
+    - name: Create Poetry environment and install project dependencies
+      command: poetry -P /vagrant/tools/poetryenv install --no-interaction
+      become_user: vagrant
+      environment:
+        HOME: /home/vagrant
+
+    - name: Ensure Poetry env activation in vagrant user's .bashrc
+      lineinfile:
+        path: /home/vagrant/.bashrc
+        create: yes
+        state: present
+        insertafter: EOF
+        line: "eval `poetry -P /vagrant/tools/poetryenv env activate`"
+      become: true
+      become_user: root

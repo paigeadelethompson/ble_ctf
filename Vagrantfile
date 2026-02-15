@@ -48,11 +48,17 @@ Vagrant.configure("2") do |config|
     #  ]
 
   end
-  config.vm.provision "shell", path: "vagrant_bluetooth_dev_setup.sh"
+  config.vm.provision "ansible_local" do |ansible|
+    ansible.playbook = "tools/ansible/playbook.yml"
+  end
   config.vm.synced_folder ".", "/vagrant", group: "staff", type: "rsync",
           rsync__exclude: [
             "build",
             ".git/objects",
-            ".git/modules/third-party/objects"
-          ]          
-  end
+            ".git/modules/third-party/objects",
+            "sdkconfig.esp32dev",
+            "CMakeLists.txt",
+            "src/CMakeLists.txt",
+            ".pio"
+          ]
+end

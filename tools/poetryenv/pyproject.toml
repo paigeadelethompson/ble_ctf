@@ -1,0 +1,18 @@
+
+[build-system]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "ble-ctf-tools-pyenv"
+version = "1.0"
+description = "Development environment for BLE CTF helper tools"
+authors = ["Ryan Holeman <ryan@hackgnar.com>"]
+package-mode = false 
+
+[tool.poetry.dependencies]
+python = ">=3.8"
+bleah = { git = "https://github.com/hackgnar/bleah.git" }
+bluepy = "*"
+scapy = "*"
+ipython = "*"
+platformio = "*"

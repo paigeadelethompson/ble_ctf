@@ -6,3 +6,6 @@ sdkconfig
 sdkconfig.old
 *.swp
 .vagrant
+*CMakeLists.txt
+sdkconfig.esp32dev
+.pio
