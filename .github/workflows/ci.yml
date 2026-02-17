@@ -3,7 +3,7 @@ name: CI / Release
 on:
   push:
     tags: ['v*', 'release-*']
-    branches: ['main', 'master', 'update']
+    branches: ['main', 'master']
   workflow_dispatch: {}
 
 jobs:
