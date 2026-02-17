@@ -8,5 +8,9 @@ sdkconfig.*
 .vagrant
 *CMakeLists.txt
 sdkconfig.esp32dev
-.pio
+.pio/build/*
+!.pio/build/ble_ctf/
+.pio/build/ble_ctf/*
+!.pio/build/ble_ctf/firmware.bin
+!.pio/build/ble_ctf/firmware.elf
 *.pyc

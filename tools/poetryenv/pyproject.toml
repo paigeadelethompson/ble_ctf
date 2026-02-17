@@ -23,6 +23,7 @@ platformio = "*"
 rich = "*"
 dbus-next = "*"
 prompt_toolkit = "^3.0"
+esptool = "*"
 
 [tool.poetry.scripts]
 gatt-enum = "poetryenv.gatt_enum:main"
