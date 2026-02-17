@@ -27,3 +27,4 @@ prompt_toolkit = "^3.0"
 [tool.poetry.scripts]
 gatt-enum = "poetryenv.gatt_enum:main"
 gatt-cli = "poetryenv.gatt_cli:main"
+patch-bin = "poetryenv.patch_device_name:main"

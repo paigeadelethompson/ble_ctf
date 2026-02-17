@@ -138,11 +138,42 @@
       become: true
       become_user: root
 
+    - name: Ensure common system bin dirs are in system-wide PATH
+      copy:
+        dest: /etc/profile.d/ble_ctf_path.sh
+        content: |
+          # Added by BLE CTF provisioning
+          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+        owner: root
+        group: root
+        mode: '0644'
+      become: true
+
+    - name: Ensure vagrant user's .bashrc exports the required PATH
+      lineinfile:
+        path: /home/vagrant/.bashrc
+        create: yes
+        regexp: '^export PATH='
+        line: 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"'
+        state: present
+        insertafter: EOF
+      become: true
+      become_user: vagrant
+
     - name: Install PlatformIO (system-wide via pip)
       pip:
         name: platformio
         executable: pip3
         state: latest
+
+    - name: Copy gatttool enumeration script to /usr/local
+      copy:
+        src: /vagrant/tools/scripts/gatttool_enum.sh
+        dest: /usr/local/gatttool_enum.sh
+        owner: root
+        group: root
+        mode: '0755'
+      become: true
 
     - name: Build firmware with PlatformIO
       command: platformio run
