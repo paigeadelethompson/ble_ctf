@@ -25,5 +25,5 @@ dbus-next = "*"
 prompt_toolkit = "^3.0"
 
 [tool.poetry.scripts]
-gatt-enum = "tools.poetryenv.gatt_enum:main"
-gatt-cli = "tools.poetryenv.gatt_cli:main"
+gatt-enum = "poetryenv.gatt_enum:main"
+gatt-cli = "poetryenv.gatt_cli:main"
