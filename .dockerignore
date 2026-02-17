@@ -1,0 +1,8 @@
+# Exclude files/dirs synced to Vagrant (mirror of Vagrantfile rsync__exclude)
+build
+.git/objects
+.git/modules/third-party/objects
+sdkconfig.esp32dev
+CMakeLists.txt
+src/CMakeLists.txt
+.pio
