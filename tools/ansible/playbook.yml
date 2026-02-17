@@ -149,6 +149,15 @@
         mode: '0644'
       become: true
 
+    - name: Ensure ansible temp dir exists for vagrant user
+      file:
+        path: /home/vagrant/.ansible/tmp
+        state: directory
+        owner: vagrant
+        group: vagrant
+        mode: '0700'
+      become: true
+
     - name: Ensure vagrant user's .bashrc exports the required PATH
       lineinfile:
         path: /home/vagrant/.bashrc
