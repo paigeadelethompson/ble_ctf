@@ -1,8 +1,7 @@
 # BLE CTF Tools (Poetry environment)
 
 This folder contains a small Poetry-managed Python environment with helper
-utilities for interacting with BlueZ/LE devices on the host. It is intended
-for interactive use during the BLE CTF/workshop.
+utilities for interacting with BlueZ/LE devices on the host.
 
 Location
 - Project: `tools/poetryenv`
